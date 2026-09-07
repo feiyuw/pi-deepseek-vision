@@ -111,8 +111,11 @@ function userPrompt(group: VisionPromptGroup): string {
 }
 
 function extractAnalysis(message: AssistantMessage, maxAnalysisChars: number): string {
-	if (message.stopReason !== "stop") {
-		throw new Error("vision model did not complete");
+	const acceptable = message.stopReason === "stop" || message.stopReason === "length";
+	if (!acceptable) {
+		throw new Error(
+			`vision model did not complete (stopReason: ${message.stopReason}${message.rawStopReason ? `, rawStopReason: ${message.rawStopReason}` : ""})`,
+		);
 	}
 
 	const analysis = message.content

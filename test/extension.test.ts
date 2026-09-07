@@ -35,7 +35,7 @@ function model(provider: string, id: string, input: ("text" | "image")[] = ["tex
 	};
 }
 
-function assistant(content: string, stopReason: "stop" | "length" = "stop") {
+function assistant(content: string, stopReason: "stop" | "length" | "error" = "stop") {
 	return {
 		role: "assistant" as const,
 		content: [text(content)],
@@ -302,7 +302,8 @@ describe("DeepSeek vision context handler", () => {
 		["text-only VLM", { visionModel: model("vision-provider", "vision-model", ["text"]) }],
 		["empty VLM result", { complete: vi.fn().mockResolvedValue(assistant("")) }],
 		["failed VLM call", { complete: vi.fn().mockRejectedValue(new Error("upstream unavailable")) }],
-		["truncated VLM result", { complete: vi.fn().mockResolvedValue(assistant("partial", "length")) }],
+		["truncated VLM result with no usable text", { complete: vi.fn().mockResolvedValue(assistant("", "length")) }],
+		["failed VLM result", { complete: vi.fn().mockResolvedValue(assistant("", "error")) }],
 		["oversized VLM result", { complete: vi.fn().mockResolvedValue(assistant("x".repeat(20_001))) }],
 	] as const)("aborts the current turn on %s", async (_name, setup) => {
 		const state = context(setup as never);
@@ -314,5 +315,16 @@ describe("DeepSeek vision context handler", () => {
 		await expect(handler(imageEvent, state.ctx as never)).rejects.toThrow(/vision preprocessing/i);
 		expect(state.abort).toHaveBeenCalledTimes(1);
 		expect(state.ctx.signal.aborted).toBe(true);
+	});
+
+	it("accepts a truncated VLM result when it still contains usable text", async () => {
+		const state = context({ complete: vi.fn().mockResolvedValue(assistant("partial details", "length")) });
+		const handler = createContextHandler({ configPath: configPath() });
+
+		const result = await handler(imageEvent, state.ctx as never);
+
+		expect(state.abort).not.toHaveBeenCalled();
+		expect(state.ctx.signal.aborted).toBe(false);
+		expect(JSON.stringify(result)).toContain("partial details");
 	});
 });

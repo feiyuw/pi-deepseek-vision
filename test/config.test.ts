@@ -40,6 +40,43 @@ describe("loadConfig", () => {
 		expect(config.cache).toEqual({ capacity: 4, ttlSeconds: 30 });
 	});
 
+	it("applies default retry settings and accepts explicit overrides", () => {
+		expect(DEFAULT_CONFIG.retry).toEqual({
+			maxAttempts: 3,
+			baseDelayMs: 1000,
+			maxDelayMs: 30_000,
+		});
+
+		const config = loadConfig(
+			writeConfig({
+				visionModel: { provider: "openai", id: "gpt-5.6-luna" },
+				retry: { maxAttempts: 2, baseDelayMs: 500, maxDelayMs: 4000 },
+			}),
+		);
+
+		expect(config.retry).toEqual({ maxAttempts: 2, baseDelayMs: 500, maxDelayMs: 4000 });
+	});
+
+	it("rejects invalid retry settings", () => {
+		expect(() =>
+			loadConfig(
+				writeConfig({
+					visionModel: { provider: "openai", id: "gpt-5.6-luna" },
+					retry: { maxAttempts: 0, baseDelayMs: -1, maxDelayMs: 0 },
+				}),
+			),
+		).toThrow(ConfigError);
+
+		expect(() =>
+			loadConfig(
+				writeConfig({
+					visionModel: { provider: "openai", id: "gpt-5.6-luna" },
+					retry: { maxAttempts: 1, baseDelayMs: 500, maxDelayMs: 4000, unknownKey: true },
+				}),
+			),
+		).toThrow(ConfigError);
+	});
+
 	it("leaves targetProviders unrestricted by default", () => {
 		const config = loadConfig(
 			writeConfig({ visionModel: { provider: "openai", id: "gpt-5.6-luna" } }),

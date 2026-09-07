@@ -22,6 +22,15 @@ export interface DeepSeekVisionConfig {
 		capacity: number;
 		ttlSeconds: number;
 	};
+	/** Retry policy for transient VLM failures (429, 5xx). */
+	retry: {
+		/** Total attempts including the first call. Default: 3. */
+		maxAttempts: number;
+		/** Exponential backoff base delay in ms. Default: 1000. */
+		baseDelayMs: number;
+		/** Backoff ceiling in ms. Default: 30000. */
+		maxDelayMs: number;
+	};
 }
 
 export const DEFAULT_CONFIG_PATH = join(homedir(), ".pi", "agent", "deepseek-vision.json");
@@ -33,6 +42,11 @@ export const DEFAULT_CONFIG: Omit<DeepSeekVisionConfig, "visionModel"> = {
 	cache: {
 		capacity: 128,
 		ttlSeconds: 900,
+	},
+	retry: {
+		maxAttempts: 3,
+		baseDelayMs: 1000,
+		maxDelayMs: 30_000,
 	},
 };
 
@@ -134,6 +148,7 @@ export function loadConfig(path = DEFAULT_CONFIG_PATH): DeepSeekVisionConfig {
 			"language",
 			"maxAnalysisChars",
 			"cache",
+			"retry",
 		],
 		"root",
 	);
@@ -213,6 +228,26 @@ export function loadConfig(path = DEFAULT_CONFIG_PATH): DeepSeekVisionConfig {
 		};
 	}
 
+	let retry = { ...DEFAULT_CONFIG.retry };
+	if (root.retry !== undefined) {
+		const retryValue = objectValue(root.retry, "retry");
+		rejectUnknownKeys(retryValue, ["maxAttempts", "baseDelayMs", "maxDelayMs"], "retry");
+		retry = {
+			maxAttempts:
+				retryValue.maxAttempts === undefined
+					? DEFAULT_CONFIG.retry.maxAttempts
+					: positiveInteger(retryValue.maxAttempts, "retry.maxAttempts"),
+			baseDelayMs:
+				retryValue.baseDelayMs === undefined
+					? DEFAULT_CONFIG.retry.baseDelayMs
+					: positiveInteger(retryValue.baseDelayMs, "retry.baseDelayMs"),
+			maxDelayMs:
+				retryValue.maxDelayMs === undefined
+					? DEFAULT_CONFIG.retry.maxDelayMs
+					: positiveInteger(retryValue.maxDelayMs, "retry.maxDelayMs"),
+		};
+	}
+
 	return {
 		visionModel,
 		targetModels,
@@ -221,5 +256,6 @@ export function loadConfig(path = DEFAULT_CONFIG_PATH): DeepSeekVisionConfig {
 		language,
 		maxAnalysisChars,
 		cache,
+		retry,
 	};
 }

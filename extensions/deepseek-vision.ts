@@ -22,6 +22,54 @@ const STATUS_KEY = "deepseek-vision";
 const PROMPT_VERSION = "v2";
 const MAX_FOCUS_CHARS = 2_000;
 
+// Transient upstream failures that are worth retrying: HTTP 429 (rate limit /
+// quota) and 5xx, plus the provider error bodies pi surfaces for them. Other
+// failures (content filter, invalid request, auth) are permanent and must not
+// be retried, otherwise the user waits for no reason.
+const RETRYABLE_ERROR_PATTERN =
+	/(429|\b5\d\d\b|insufficient_quota|rate[ _-]?limit|throttl|too many requests|temporar|overloaded|service unavailable)/i;
+
+function isRetryableVlmFailure(message: AssistantMessage): boolean {
+	return message.stopReason === "error" && RETRYABLE_ERROR_PATTERN.test(message.errorMessage ?? "");
+}
+
+function delay(ms: number, signal: AbortSignal): Promise<void> {
+	return new Promise((resolve, reject) => {
+		if (signal.aborted) {
+			reject(new Error("Request was aborted"));
+			return;
+		}
+		const timer = setTimeout(() => {
+			signal.removeEventListener("abort", onAbort);
+			resolve();
+		}, ms);
+		const onAbort = () => {
+			clearTimeout(timer);
+			reject(new Error("Request was aborted"));
+		};
+		signal.addEventListener("abort", onAbort, { once: true });
+	});
+}
+
+async function completeWithRetry(
+	complete: () => Promise<AssistantMessage>,
+	retry: DeepSeekVisionConfig["retry"],
+	signal: AbortSignal,
+): Promise<AssistantMessage> {
+	const { maxAttempts, baseDelayMs, maxDelayMs } = retry;
+	let attempt = 1;
+	for (;;) {
+		const response = await complete();
+		if (attempt >= maxAttempts || !isRetryableVlmFailure(response)) {
+			return response;
+		}
+		// Exponential backoff: base * 2^(attempt-1), capped at maxDelayMs.
+		const backoff = Math.min(baseDelayMs * 2 ** (attempt - 1), maxDelayMs);
+		attempt++;
+		await delay(backoff, signal);
+	}
+}
+
 // Built-in phrases that mark an explicit user request to re-analyze the images.
 // Users can append their own regular expressions via `reanalyzeTriggers`.
 const DEFAULT_REANALYZE_TRIGGERS = [
@@ -247,22 +295,27 @@ export function createContextHandler(
 
 				let response: AssistantMessage;
 				try {
-					response = await ctx.modelRegistry.complete(
-						visionModel,
-						{
-							systemPrompt: systemPrompt(config.language),
-							messages: [
+					response = await completeWithRetry(
+						() =>
+							ctx.modelRegistry.complete(
+								visionModel,
 								{
-									role: "user",
-									content: [
-										{ type: "text", text: prompt },
-										...group.images,
+									systemPrompt: systemPrompt(config.language),
+									messages: [
+										{
+											role: "user",
+											content: [
+												{ type: "text", text: prompt },
+												...group.images,
+											],
+											timestamp: Date.now(),
+										},
 									],
-									timestamp: Date.now(),
 								},
-							],
-						},
-						{ signal: ctx.signal },
+								{ signal: ctx.signal },
+							),
+						config.retry,
+						ctx.signal,
 					);
 				} finally {
 					if (ctx.hasUI) {

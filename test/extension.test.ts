@@ -35,7 +35,7 @@ function model(provider: string, id: string, input: ("text" | "image")[] = ["tex
 	};
 }
 
-function assistant(content: string, stopReason: "stop" | "length" | "error" = "stop") {
+function assistant(content: string, stopReason: "stop" | "length" | "error" = "stop", errorMessage?: string) {
 	return {
 		role: "assistant" as const,
 		content: [text(content)],
@@ -51,6 +51,7 @@ function assistant(content: string, stopReason: "stop" | "length" | "error" = "s
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
 		stopReason,
+		...(errorMessage !== undefined ? { errorMessage } : {}),
 		timestamp: 1,
 	};
 }
@@ -326,5 +327,54 @@ describe("DeepSeek vision context handler", () => {
 		expect(state.abort).not.toHaveBeenCalled();
 		expect(state.ctx.signal.aborted).toBe(false);
 		expect(JSON.stringify(result)).toContain("partial details");
+	});
+
+	it("retries a retryable VLM failure (429) and succeeds on retry", async () => {
+		const complete = vi
+			.fn()
+			.mockResolvedValueOnce(assistant("", "error", "429: insufficient_quota"))
+			.mockResolvedValueOnce(assistant("details after retry"));
+		const state = context({ complete });
+		const handler = createContextHandler({ configPath: configPath() });
+
+		const result = await handler(imageEvent, state.ctx as never);
+
+		expect(complete).toHaveBeenCalledTimes(2);
+		expect(state.abort).not.toHaveBeenCalled();
+		expect(JSON.stringify(result)).toContain("details after retry");
+	});
+
+	it("aborts after exhausting retries on a persistent 429", async () => {
+		const complete = vi
+			.fn()
+			.mockResolvedValueOnce(assistant("", "error", "429: insufficient_quota"))
+			.mockResolvedValueOnce(assistant("", "error", "429: insufficient_quota"))
+			.mockResolvedValue(assistant("", "error", "429: insufficient_quota"));
+		const state = context({ complete });
+		const handler = createContextHandler({ configPath: configPath({ retry: { maxAttempts: 2, baseDelayMs: 1, maxDelayMs: 2 } }) });
+
+		await expect(handler(imageEvent, state.ctx as never)).rejects.toThrow(/429: insufficient_quota/);
+		expect(complete).toHaveBeenCalledTimes(2);
+		expect(state.abort).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not retry non-retryable VLM failures", async () => {
+		const complete = vi.fn().mockResolvedValue(assistant("", "error", "content filter triggered"));
+		const state = context({ complete });
+		const handler = createContextHandler({ configPath: configPath() });
+
+		await expect(handler(imageEvent, state.ctx as never)).rejects.toThrow(/vision preprocessing/i);
+		expect(complete).toHaveBeenCalledTimes(1);
+		expect(state.abort).toHaveBeenCalledTimes(1);
+	});
+
+	it("aborts immediately instead of retrying when retries are disabled", async () => {
+		const complete = vi.fn().mockResolvedValue(assistant("", "error", "429: insufficient_quota"));
+		const state = context({ complete });
+		const handler = createContextHandler({ configPath: configPath({ retry: { maxAttempts: 1 } }) });
+
+		await expect(handler(imageEvent, state.ctx as never)).rejects.toThrow(/vision preprocessing/i);
+		expect(complete).toHaveBeenCalledTimes(1);
+		expect(state.abort).toHaveBeenCalledTimes(1);
 	});
 });

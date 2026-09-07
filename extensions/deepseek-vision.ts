@@ -114,7 +114,7 @@ function extractAnalysis(message: AssistantMessage, maxAnalysisChars: number): s
 	const acceptable = message.stopReason === "stop" || message.stopReason === "length";
 	if (!acceptable) {
 		throw new Error(
-			`vision model did not complete (stopReason: ${message.stopReason}${message.rawStopReason ? `, rawStopReason: ${message.rawStopReason}` : ""})`,
+			`vision model did not complete (stopReason: ${message.stopReason}${message.rawStopReason ? `, rawStopReason: ${message.rawStopReason}` : ""}${message.errorMessage ? `, errorMessage: ${message.errorMessage}` : ""})`,
 		);
 	}
 
